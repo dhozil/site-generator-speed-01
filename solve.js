@@ -868,7 +868,49 @@ function pageOf(s) {
 }
 
 /** One site's output tree: path -> text. */
+let currentSink = null;
+let currentOut = null;
+let currentBuilt = null;
+
+/** One output file: the sink when streaming, else the tree being built. */
+function put(filePath, text) {
+  if (currentSink !== null) {
+    currentBuilt.add(filePath);
+    currentSink(filePath, text);
+  } else currentOut[filePath] = text;
+}
+
+/** Whether a file path already holds a built page. */
+function hasBuilt(filePath) {
+  return currentOut !== null ? Object.hasOwn(currentOut, filePath) : currentBuilt.has(filePath);
+}
+
+/** One site's answer, delivered file by file to `sink(path, text)` in the reference's order. */
+export function runStream(input, sink) {
+  currentSink = sink;
+  currentBuilt = new Set();
+  try {
+    build(input);
+  } finally {
+    currentSink = null;
+    currentBuilt = null;
+  }
+}
+
+/** One site's output tree: path -> text. */
 export function run(input) {
+  const out = {};
+  currentOut = out;
+  currentSink = null;
+  try {
+    build(input);
+  } finally {
+    currentOut = null;
+  }
+  return out;
+}
+
+function build(input) {
   const report = [];
   const templates = new Map();
   const templateNames = Object.keys(input.templates).sort(byCodeUnits);
@@ -1024,7 +1066,6 @@ export function run(input) {
   const tags = [...bySlugTag.values()].sort((x, y) => y.posts.length - x.posts.length || byCodeUnits(x.slug, y.slug));
 
   // 7. layouts
-  const output = {};
   const cards = new Map();
   for (let k = 0; k < posts.length; k++) cards.set(posts[k], cardOf(posts[k]));
   const site = { title: input.site.title, base_url: base };
@@ -1039,7 +1080,7 @@ export function run(input) {
   };
   for (let k = 0; k < live.length; k++) {
     const s = live[k];
-    output[`${s.outDir}/index.html`] = render(s.layout, { page: pageOf(s) });
+    put(`${s.outDir}/index.html`, render(s.layout, { page: pageOf(s) }));
   }
   const per = input.site.per_page;
   const pages = Math.max(1, Math.ceil(posts.length / per));
@@ -1049,21 +1090,21 @@ export function run(input) {
       posts: posts.slice((k - 1) * per, k * per).map((p) => cards.get(p)),
       pager: { number: k, total: pages, url: indexUrl(k), newer_url: k === 1 ? "" : indexUrl(k - 1), older_url: k === pages ? "" : indexUrl(k + 1) },
     });
-    if (html !== null) output[k === 1 ? "index.html" : `page/${k}/index.html`] = html;
+    if (html !== null) put(k === 1 ? "index.html" : `page/${k}/index.html`, html);
   }
   for (let k = 0; k < tags.length; k++) {
     const t = tags[k];
     const html = render("tag", {
       tag: { name: t.name, slug: t.slug, url: t.url, count: t.posts.length, posts: t.posts.map((p) => cards.get(p)) },
     });
-    if (html !== null) output[`tags/${t.slug}/index.html`] = html;
+    if (html !== null) put(`tags/${t.slug}/index.html`, html);
   }
   const tagsHtml = render("tags", {});
-  if (tagsHtml !== null) output["tags/index.html"] = tagsHtml;
+  if (tagsHtml !== null) put("tags/index.html", tagsHtml);
   for (let k = 0; k < statics.length; k++) {
     const f = statics[k];
-    if (Object.hasOwn(output, f.path)) report.push(`shadowed ${f.path}: a built page has its path`);
-    else output[f.path] = f.content;
+    if (hasBuilt(f.path)) report.push(`shadowed ${f.path}: a built page has its path`);
+    else put(f.path, f.content);
   }
 
   // 8. report
@@ -1071,6 +1112,5 @@ export function run(input) {
   let pageCount = 0;
   for (let k = 0; k < live.length; k++) if (!live[k].post) pageCount++;
   lines.push(`built ${pageCount} pages, ${posts.length} posts, ${tags.length} tags and ${statics.length} static files`);
-  output[REPORT_FILE] = `${lines.join("\n")}\n`;
-  return output;
+  put(REPORT_FILE, `${lines.join("\n")}\n`);
 }
