@@ -697,6 +697,20 @@ function truthy(v) {
   return v !== undefined && v !== null && v !== false && v !== "" && v !== 0;
 }
 
+/** Whether a node list reads `loop` (absent an inner for that binds the same name). */
+function usesLoop(nodes, shadowed) {
+  for (let k = 0; k < nodes.length; k++) {
+    const n = nodes[k];
+    if ((n.kind === "var" || n.kind === "raw" || n.kind === "if" || n.kind === "for") && n.path[0] === "loop" && !shadowed) return true;
+    if (n.kind === "if") {
+      if (usesLoop(n.then, shadowed)) return true;
+      if (n.else !== null && usesLoop(n.else, shadowed)) return true;
+    }
+    if (n.kind === "for" && usesLoop(n.body, shadowed || n.name === "loop")) return true;
+  }
+  return false;
+}
+
 /** A node list compiled to one render function (scope, ctx, depth) -> string. */
 function compileNodes(nodes) {
   const fns = new Array(nodes.length);
@@ -737,6 +751,17 @@ function compileNode(n) {
       const p = n.path;
       const name = n.name;
       const bodyFn = compileNodes(n.body);
+      const needLoop = usesLoop(n.body, name === "loop");
+      if (!needLoop) {
+        return (scope, ctx, depth) => {
+          const xs = lookup(scope, p);
+          if (!Array.isArray(xs)) return "";
+          let out = "";
+          const len = xs.length;
+          for (let k = 0; k < len; k++) out += bodyFn({ vars: { [name]: xs[k] }, parent: scope }, ctx, depth);
+          return out;
+        };
+      }
       return (scope, ctx, depth) => {
         const xs = lookup(scope, p);
         if (!Array.isArray(xs)) return "";
